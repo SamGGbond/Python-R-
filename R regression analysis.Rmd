@@ -1,0 +1,528 @@
+---
+title: "R regression analysis"
+author: "Zhouchen Shen"
+date: "2021/4/11"
+output: pdf_document
+---
+#R regression analysis
+## we use the Covid-19 daily new cases of Toronto from March 2020 to December 2020. The data source can be found at https://raw.githubusercontent.com/kentranz/socialMobilityCOVID/master/data/raw/TorontoCovid.toronto.covid
+```{r}
+library(RCurl) 
+toronto.covid <- read.csv("toronto.covid.csv", header = TRUE)
+```
+
+```{r}
+tor <- data.frame(Date = toronto.covid$Episode.Date[307:2], Day_Num = 1:306, 
+                  New_Cases = toronto.covid$Case.Count[307:2])
+
+head(tor,15)
+```
+
+
+```{r}
+par(mfrow = c(1, 3))
+hist(tor$New_Cases, breaks= "Scott", xlab="Adjusted new cases", main = "Histogram of adjusted new cases")
+
+boxplot(tor$New_Cases, ylab="Adjusted new cases", main="Boxplot of adjusted new cases")
+
+qvals <- sort(tor$New_Cases)
+pvals <- ppoints(length(qvals))
+plot(pvals, qvals, pch = 19, col=adjustcolor("grey", alpha = 0.5),
+     xlim=c(0,1),
+     xlab = "Proportion p",
+     ylab = "Qy(p)",
+     main = "Quantile plot of adjusted new cases")
+```
+
+\newpage
+## (c)
+```{R}
+plot(tor$Day_Num, tor$New_Cases, main = "Scatterplot of adjusted new cases versus day number", pch = 19, cex = 1, col = adjustcolor("black",alpha = 0.3), 
+     xlab = "Day number",
+     ylab = "Adjusted new cases")
+fit = lm(New_Cases~Day_Num, data=tor)
+abline(fit, col="red", lwd=2)
+```
+```{r}
+N = nrow(tor)
+delta = matrix(0, nrow = N, ncol = 2)
+for(i in 1:N) {
+  fit.no.i = lm(New_Cases ~ Day_Num, data = tor[-i,])
+  delta[i, ] = abs(fit$coef - fit.no.i$coef)
+}
+
+delta2 = apply(X = delta, MARGIN = 1, FUN =function(z) {
+  sqrt(sum(z^2))})
+
+plot(delta2, main = bquote("The Influence of each observation on regression parameter" ~ theta), ylab = bquote(Delta), pch = 19,
+     col = adjustcolor("grey", 0.6))
+```
+We are going to find the three most influential observations from the population
+```{r}
+tor$Date[delta2>=sort(delta2, decreasing = TRUE)[3]]
+```
+Then we are going to remove the three  most influential observations from the population and calculate the least squares regression line using the observations that remain.
+
+```{r}
+plot(tor$Day_Num, tor$New_Cases, main = "Scatterplot of adjusted New Cases versus day number", pch = 19, cex = 1, col = adjustcolor("black",alpha = 0.3), 
+     xlab = "Day number",
+     ylab = "Adjusted New Cases")
+
+abline(fit, col="red", lwd=2)
+index = which(delta2>=sort(delta2, decreasing = TRUE)[3])
+w = rep(1, N)
+w[index] = 0
+fit2 = lm(New_Cases~Day_Num, weights = w, data = tor)
+
+abline(fit2,col="blue",lwd=2)
+
+legend("topleft", legend=c("LS line", "LS line without outliers"), col=c("red", "blue"), 
+                           cex = 0.75, bty = "n", lty = 1, lwd =2)
+
+```
+Instead of removing highly influential observations, we could perform a robust linear regression to mitigate their influence. In addition, we use Turkey's bisquare objective function in the robust linear regression.
+
+$$
+\rho_k(r) =
+\left\{ \begin{array}{cc}
+                      \frac{r^2}{2} - \frac{r^4}{2k^2} + \frac{r^6}{6k^4}  & \mbox{for } |r| \le k \\
+                      \frac{k^2}{6}  & \mbox{for } |r| > k
+\end{array} 
+\right.
+$$
+The above is the Turkey Bisquare objective function we are going to use.
+
+```{r}
+tukey.fn <- function(r, k) {
+  val = (r^2)/2 - (r^4)/(2*k^2) + (r^6)/(6*k^4)
+  subr = abs(r) > k
+  val[ subr ] = (k^2)/6
+  return(val)
+}
+tukey.fn.prime <- function(r, k) {
+  val = r - (2*r^3)/(k^2) + (r^5)/(k^4)
+  subr = abs(r) > k
+  val[ subr ] = 0
+  return(val)
+}
+```
+
+```{r}
+createRobustTukeyRho <- function(x, y, kval) {
+    function(theta) {
+        alpha <- theta[1]
+        beta <- theta[2]
+        sum(tukey.fn(y - alpha - beta * x, k = kval))
+    }
+}
+
+createRobustTukeyGradient <- function(x, y, kval) {
+    function(theta) {
+        alpha <- theta[1]
+        beta <- theta[2]
+        ru = y - alpha - beta * x
+        rhok = tukey.fn.prime(ru, k = kval)
+        -1 * c(sum(rhok * 1), sum(rhok * x))
+    }
+}
+```
+
+Then, we are going to use k = 6
+```{r}
+rho <- createRobustTukeyRho(x=tor$Day_Num, y=tor$New_Cases, k=6)
+gradient <- createRobustTukeyGradient(x=tor$Day_Num, y=tor$New_Cases, k=6)
+result <- nlminb(start = c(0,1), objective = rho, gradient = gradient)
+result
+```
+
+```{r}
+plot(tor$Day_Num, tor$New_Cases, main = "Scatterplot of adjusted New Cases versus day number", pch = 19, cex = 1, col = adjustcolor("black",alpha = 0.3), 
+     xlab = "Day number",
+     ylab = "Adjusted New Cases")
+
+abline(fit, col="red", lwd=2)
+index = which(delta2>=sort(delta2, decreasing = TRUE)[3])
+w = rep(1, N)
+w[index] = 0
+fit2 = lm(New_Cases~Day_Num, weights = w, data = tor)
+
+abline(fit2,col="blue",lwd=2)
+
+abline(result$par, col="green", lwd=2)
+
+legend("topleft", legend=c("LS line", "LS line without outliers","Tukey line"), 
+       col=c("red", "blue","green"), 
+       cex = 0.75, bty = "n", lty = 1, lwd =2)
+```
+By observing the three linear regression line, we can see that the turkey line(green one) is less affected by the outliers.
+
+## Next, we are going to use polynomials to model the covid-19 data.
+
+```{r, echo = FALSE}
+getXYpop <- function(xvarname, yvarname, pop){
+  popData <- pop[, c(xvarname, yvarname)]
+  names(popData) <- c("x", "y")
+  popData
+}
+
+getXYSample <- function(xvarname, yvarname, samp, pop){
+  sampData <- pop[samp, c(xvarname, yvarname)]
+  names(sampData) <- c("x", "y")
+  sampData
+}
+
+getSampleComp <- function(pop, size, replace=FALSE) {
+  N <- nrow(as.data.frame(pop))
+  samp <- rep(FALSE, N)
+  samp[sample(1:N, size, replace = replace)] <- TRUE
+  samp
+}
+
+sampSize <- function(samp) {popSize(samp)}
+
+popSize <- function(pop) {nrow(as.data.frame(pop))}
+
+getmubar <- function(muhats) {
+  function(x) {
+    Ans <- sapply(muhats, FUN=function(muhat){muhat(x)})
+    apply(Ans, MARGIN=1, FUN=mean)
+  }
+}
+
+gettauFun <- function(pop, xvarname, yvarname){
+  pop   = na.omit(pop[, c(xvarname, yvarname)])
+  tauFun = approxfun(pop[,xvarname], pop[,yvarname], rule = 2, ties = mean)
+  return(tauFun)
+}
+
+getmuhat <- function(sampleXY, complexity = 1){
+  formula <- paste0("y ~ ",
+                    if (complexity==0) {
+                      "1"
+                    } else {
+                      paste0("poly(x, ", complexity, ", raw = FALSE)") 
+                    }
+  )
+  
+  fit <- lm(as.formula(formula), data = sampleXY)
+  tx = sampleXY$x
+  ty = fit$fitted.values
+  
+  range.X = range(tx)
+  val.rY  = c( mean(ty[tx == range.X[1]]), 
+               mean(ty[tx == range.X[2]]) )
+  
+  
+  muhat <- function(x){
+    if ("x" %in% names(x)) {
+      newdata <- x
+    } else 
+    { newdata <- data.frame(x = x) }
+    val = predict(fit, newdata = newdata)
+    val[newdata$x < range.X[1]] = val.rY[1]
+    val[newdata$x > range.X[2]] = val.rY[2]
+    val
+  }
+  muhat
+}
+
+apse_all <- function(Ssamples, Tsamples, complexity, tau){
+  N_S <- length(Ssamples)
+  muhats <- lapply(Ssamples, 
+                   FUN=function(sample) getmuhat(sample, complexity)
+  )
+  mubar <- getmubar(muhats)
+  
+  rowMeans(sapply(1:N_S, 
+                  FUN=function(j){
+                    T_j <- Tsamples[[j]]
+                    S_j <- Ssamples[[j]]
+                    muhat <- muhats[[j]]
+                    T_j <- na.omit(T_j)
+                    y <- c(S_j$y, T_j$y)
+                    x <- c(S_j$x, T_j$x)
+                    
+                    tau_x    <- tau(x)
+                    muhat_x <- muhat(x)
+                    mubar_x <- mubar(x)
+                    
+                    apse        <- (y - muhat_x)
+                    bias2       <- (mubar_x - tau_x)
+                    var_mutilde <-  (muhat_x - mubar_x)
+                    var_y       <- (y - tau_x)
+                    
+                    squares <- rbind(apse, var_mutilde, bias2, var_y)^2
+                    
+                    rowMeans(squares)
+                  }
+  ))
+}
+```
+
+```{r}
+par(mfrow=c(3,2))
+plot(x = tor$Day_Num, y = tor$New_Cases, pch=16, cex = 0.8,
+     col = adjustcolor("grey", 0.5),
+     xlab = "Day Number",
+     ylab = "# New Confirmed Cases",
+     main = "Daily New COVID-19 Cases in Toronto\n March 1 - December 31, 2020")
+muhat1 <- getmuhat(data.frame(x = tor$Day_Num, y = tor$New_Cases), 1)
+curve(muhat1, from = 1, to = 306, add = TRUE, col = "green", lwd = 3)
+legend("topleft", legend = "deg=1", col = "blue", lwd = 3, bty = "n")
+
+plot(x = tor$Day_Num, y = tor$New_Cases, pch=16, cex = 0.8,
+     col = adjustcolor("grey", 0.5),
+     xlab = "Day Number",
+     ylab = "# New Confirmed Cases",
+     main = "Daily New COVID-19 Cases in Toronto\n March 1 - December 31, 2020")
+muhat2 <- getmuhat(data.frame(x = tor$Day_Num, y = tor$New_Cases), 2)
+curve(muhat2, from = 1, to = 306, add = TRUE, col = "blue", lwd = 3)
+legend("topleft", legend = "deg=2", col = "blue", lwd = 3, bty = "n")
+
+plot(x = tor$Day_Num, y = tor$New_Cases, pch=16, cex = 0.8,
+     col = adjustcolor("grey", 0.5),
+     xlab = "Day Number",
+     ylab = "# New Confirmed Cases",
+     main = "Daily New COVID-19 Cases in Toronto\n March 1 - December 31, 2020")
+muhat5 <- getmuhat(data.frame(x = tor$Day_Num, y = tor$New_Cases), 5)
+curve(muhat5, from = 1, to = 306, add = TRUE, col = "yellow", lwd = 3)
+legend("topleft", legend = "deg=5", col = "blue", lwd = 3, bty = "n")
+
+plot(x = tor$Day_Num, y = tor$New_Cases, pch=16, cex = 0.8,
+     col = adjustcolor("grey", 0.5),
+     xlab = "Day Number",
+     ylab = "# New Confirmed Cases",
+     main = "Daily New COVID-19 Cases in Toronto\n March 1 - December 31, 2020")
+muhat10 <- getmuhat(data.frame(x = tor$Day_Num, y = tor$New_Cases), 10)
+curve(muhat10, from = 1, to = 306, add = TRUE, col = "red", lwd = 3)
+legend("topleft", legend = "deg=10", col = "blue", lwd = 3, bty = "n")
+
+plot(x = tor$Day_Num, y = tor$New_Cases, pch=16, cex = 0.8,
+     col = adjustcolor("grey", 0.5),
+     xlab = "Day Number",
+     ylab = "# New Confirmed Cases",
+     main = "Daily New COVID-19 Cases in Toronto\n March 1 - December 31, 2020")
+muhat15 <- getmuhat(data.frame(x = tor$Day_Num, y = tor$New_Cases), 15)
+curve(muhat15, from = 1, to = 306, add = TRUE, col = "lightblue", lwd = 3)
+legend("topleft", legend = "deg=15", col = "blue", lwd = 3, bty = "n")
+
+plot(x = tor$Day_Num, y = tor$New_Cases, pch=16, cex = 0.8,
+     col = adjustcolor("grey", 0.5),
+     xlab = "Day Number",
+     ylab = "# New Confirmed Cases",
+     main = "Daily New COVID-19 Cases in Toronto\n March 1 - December 31, 2020")
+muhat20 <- getmuhat(data.frame(x = tor$Day_Num, y = tor$New_Cases), 20)
+curve(muhat20, from = 1, to = 306, add = TRUE, col = "pink", lwd = 3)
+legend("topleft", legend = "deg=20", col = "blue", lwd = 3, bty = "n")
+
+```
+
+
+```{r, echo=FALSE}
+M <- 50
+n <- 100
+set.seed(341)
+samps <- lapply(1:M, FUN= function(i){getSampleComp(tor, n)})
+Ssamples <- lapply(samps, FUN= function(Si){getXYSample("Day_Num", "New_Cases", Si, tor)})
+Tsamples <- lapply(samps, FUN= function(Si){getXYSample("Day_Num", "New_Cases", !Si, tor)})
+```
+
+```{r}
+muhats1 <- lapply(Ssamples, getmuhat, complexity = 1)
+muhats2 <- lapply(Ssamples, getmuhat, complexity = 2)
+muhats5 <- lapply(Ssamples, getmuhat, complexity = 5)
+muhats10 <- lapply(Ssamples, getmuhat, complexity = 10)
+muhats15 <- lapply(Ssamples, getmuhat, complexity = 15)
+muhats20 <- lapply(Ssamples, getmuhat, complexity = 20)
+```
+
+
+```{r}
+par(mfrow=c(3,2))
+
+plot(x = tor$Day_Num, y = tor$New_Cases, pch = 19, cex = 0.8,
+     col = adjustcolor("grey", 0.5),
+     xlab = "Day Number",
+     ylab = "# New Confirmed Cases",
+     main = bquote("Degree 1" ~ hat(mu) * "'s"))
+for (i in 1:M) {
+    curveFn <- muhats1[[i]]
+    curve(curveFn, from = 1, to = 306, add = TRUE, col = adjustcolor("blue", 
+        0.25))}
+
+plot(x = tor$Day_Num, y = tor$New_Cases, pch = 19, cex = 0.8,
+     col = adjustcolor("grey", 0.5),
+     xlab = "Day Number",
+     ylab = "# New Confirmed Cases",
+     main = bquote("Degree 2" ~ hat(mu) * "'s"))
+for (i in 1:M) {
+    curveFn <- muhats2[[i]]
+    curve(curveFn, from = 1, to = 306, add = TRUE, col = adjustcolor("green", 
+        0.25))}
+
+plot(x = tor$Day_Num, y = tor$New_Cases, pch = 19, cex = 0.8,
+     col = adjustcolor("grey", 0.5),
+     xlab = "Day Number",
+     ylab = "# New Confirmed Cases",
+     main = bquote("Degree 5" ~ hat(mu) * "'s"))
+for (i in 1:M) {
+    curveFn <- muhats5[[i]]
+    curve(curveFn, from = 1, to = 306, add = TRUE, col = adjustcolor("red", 
+        0.25))}
+
+plot(x = tor$Day_Num, y = tor$New_Cases, pch = 19, cex = 0.8,
+     col = adjustcolor("grey", 0.5),
+     xlab = "Day Number",
+     ylab = "# New Confirmed Cases",
+     main = bquote("Degree 10" ~ hat(mu) * "'s"))
+for (i in 1:M) {
+    curveFn <- muhats10[[i]]
+    curve(curveFn, from = 1, to = 306, add = TRUE, col = adjustcolor("yellow", 
+        0.25))}
+
+plot(x = tor$Day_Num, y = tor$New_Cases, pch = 19, cex = 0.8,
+     col = adjustcolor("grey", 0.5),
+     xlab = "Day Number",
+     ylab = "# New Confirmed Cases",
+     main = bquote("Degree 15" ~ hat(mu) * "'s"))
+for (i in 1:M) {
+    curveFn <- muhats15[[i]]
+    curve(curveFn, from = 1, to = 306, add = TRUE, col = adjustcolor("orange", 
+        0.25))}
+
+plot(x = tor$Day_Num, y = tor$New_Cases, pch = 19, cex = 0.8,
+     col = adjustcolor("grey", 0.5),
+     xlab = "Day Number",
+     ylab = "# New Confirmed Cases",
+     main = bquote("Degree 20" ~ hat(mu) * "'s"))
+for (i in 1:M) {
+    curveFn <- muhats20[[i]]
+    curve(curveFn, from = 1, to = 306, add = TRUE, col = adjustcolor("pink", 
+        0.25))}
+```
+
+
+```{r}
+tau.day <- gettauFun(tor, "Day_Num", "New_Cases")
+degrees <- 0:20
+apse_vals <- sapply(degrees, FUN = function(complexity) {
+  apse_all(Ssamples, Tsamples, complexity = complexity, tau = tau.day)})
+
+t(rbind(degrees, apse = round(apse_vals, 5)))
+```
+
+
+```{r}
+plot(degrees, sqrt(apse_vals[1, ]), xlab = "Degree", ylab = "", type = "l", 
+    ylim = c(0, max(sqrt(apse_vals))), col = "purple", lwd = 2)
+lines(degrees, sqrt(apse_vals[2, ]), col = "blue", lwd = 2)
+lines(degrees, sqrt(apse_vals[3, ]), col = "red", lwd = 2)
+lines(degrees, sqrt(apse_vals[4, ]), col = "black", lwd = 2)
+legend("topright", legend = c("APSE", "Var", "Bias2", "Var_y"), col = c("purple", 
+    "blue", "red", "black"), lwd = 2, bty = "n", cex = 0.8)
+```
+
+
+```{r}
+best.deg <- degrees[which.min(apse_vals[1, ])]
+print(best.deg)
+muhat.best <- getmuhat(data.frame(x = tor$Day_Num, y = tor$New_Cases), best.deg)
+```
+
+```{r}
+plot(x = tor$Day_Num, y = tor$New_Cases, pch = 16, cex = 0.7,
+     col = adjustcolor("grey", 0.5),
+     xlab = "Day Number",
+     ylab = "# New Confirmed Cases",
+     main = "Daily New COVID-19 Cases in Toronto\n March 1 - December 31, 2020")
+curve(muhat.best, from = 1, to = 306, add = TRUE, col = "purple", lwd = 3)
+```
+Thus, we find the best polynomial model with degree = 6.
+
+Then, we are going to use gamma distribution as the potential model for the data and use Method of Moments estimation and Maximum Likelihood (ML) estimation to estimate the paramaters alpha and beta for the distribution.
+
+```{r}
+hist(tor$New_Cases, main = 'The Histogram of Daily New Cases', xlab = 'Daily New Cases')
+```
+
+
+```{R}
+beta.mm =(mean(tor$New_Cases^2)-(mean(tor$New_Cases))^2) / mean(tor$New_Cases)
+alpha.mm = mean(tor$New_Cases) / beta.mm
+c(alpha.mm, beta.mm)
+```
+\newpage
+```{r}
+createGammaPsifn <- function(y){
+  N <- length(y)
+  function(theta){
+    alpha <- theta[1]
+    beta <- theta[2]
+    c(-N* digamma(alpha)- N*log(beta) + sum(log(y)), -alpha*N/beta + sum(y)/beta^2)
+  }
+}
+
+creatGammaPsiPrimeFn <- function(y){
+  N <- length(y)
+  function(theta){
+    alpha = theta[1]
+    beta = theta[2]
+    mat = matrix(0, nrow=length(theta), ncol=length(theta))
+    mat[1,1] = -N*trigamma(alpha)
+    mat[1,2] = -N/beta
+    mat[2,1] = -N/beta
+    mat[2,2] = alpha*N/beta^2-2*sum(y)/beta^3
+    return(mat)
+  }
+}
+```
+
+
+```{r, echo=FALSE}
+testConvergence <- function(thetaNew, thetaOld, tolerance = 1e-10, relative = FALSE) {
+    sum(abs(thetaNew - thetaOld)) < if (relative) 
+        tolerance * sum(abs(thetaOld)) else tolerance
+}
+
+NewtonRaphson <- function(theta, psiFn, psiPrimeFn, dim, testConvergenceFn = testConvergence, 
+    maxIterations = 100, tolerance = 1e-06, relative = FALSE) {
+    if (missing(theta)) {
+        if (missing(dim)) {
+            dim <- length(psiFn())
+        }
+        theta <- rep(0, dim)
+    }
+    converged <- FALSE
+    i <- 0
+    while (!converged & i <= maxIterations) {
+        thetaNew <- theta - solve(psiPrimeFn(theta), psiFn(theta))
+        converged <- testConvergenceFn(thetaNew, theta, tolerance = tolerance, 
+            relative = relative)
+        
+        theta <- thetaNew
+        i <- i + 1
+    }
+    list(theta = theta, converged = converged, iteration = i, fnValue = psiFn(theta))
+}
+```
+
+```{r}
+psi <- createGammaPsifn(tor$New_Cases)
+psiPrime <- creatGammaPsiPrimeFn(tor$New_Cases)
+Result <- NewtonRaphson(theta = c(alpha.mm, beta.mm), psiFn = psi, psiPrimeFn = psiPrime)
+print(Result)
+alpha.ml = Result$theta[1]
+beta.ml = Result$theta[2]
+```
+
+
+```{r}
+hist(tor$New_Cases, prob=TRUE, ylim = c(0, 0.006), main = 'Histogram of daily new cases', xlab = 'Daily New cases')
+x = seq(0, 1000, 0.1)
+lines(x, dgamma(x, shape = alpha.mm, scale = beta.mm), col='red')
+lines(x, dgamma(x, shape = alpha.ml, scale = beta.ml), col='blue')
+legend('topleft', legend =c('MM gamma density curve', 'ML gamma density curve'), col = c('red','blue'), lty=1, lwd=1, bty='n', cex = 1)
+```
+From the above plot, we can see that MM gamma density curve and ML gamma density curve is similar. And we can use the gamma model to describe the probability of the certain number of Covid-19 daily new cases of the future.
+
+By comparison, we can clearly see that the polynomial model with degree 6 is better fitted to the data than linear regression model and linear robust regression model. Then we can use the polynomial model with degree 6 to predict the future Covid-19 daily new cases.
